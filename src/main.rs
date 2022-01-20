@@ -1,13 +1,14 @@
 #[macro_use]
 extern crate clap;
 
-use std::io::{Write, Stdout, stdout};
+use std::io::{stdout, Stdout, Write};
 
 use crossterm::{
-    cursor::{MoveTo, MoveToNextLine, Show, Hide},
+    cursor::{Hide, MoveTo, MoveToNextLine, Show},
+    event::{self, Event, KeyCode},
     style::{Print, Stylize},
     terminal::{self, Clear, ClearType},
-    ExecutableCommand, Result, event::{Event, KeyCode, self},
+    ExecutableCommand, Result,
 };
 use rand::prelude::SliceRandom;
 
@@ -27,6 +28,7 @@ const MINE: char = '!';
 const COVERED: char = 'X';
 
 // uncover everything at the beginning
+// use this for debugging
 const SHOW_EVERYTHING: bool = true;
 
 fn main() {
@@ -38,7 +40,7 @@ fn main() {
         Some(level) => Game::run(stdout(), level.parse::<usize>().unwrap_or(1)),
         None => Game::init(),
     } {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(error) => {
             eprintln!("Error: {}", error);
             std::process::exit(1);
@@ -94,6 +96,7 @@ impl Game {
 
         // starts at 0!! the board starts at 1.
         let selection = ((width / 2), (width / 2));
+        // let selection = (0, 0);
 
         let mut myself = Self {
             out,
@@ -124,6 +127,7 @@ impl Game {
 
             // if we pressed select (enter/space) uncover the current cell
             if event.is_select() {
+                // if this is our first time uncovering a cell then we populate the board so that we don't click on a mine as our first one
                 if !myself.is_touched {
                     myself.populate_board();
                     myself.is_touched = true;
@@ -139,7 +143,7 @@ impl Game {
                     myself.update_cursor()?;
                     continue;
                 }
-                None => {},
+                None => {}
             };
 
             // update the board after everything else is done
@@ -164,37 +168,100 @@ impl Game {
         Ok(())
     }
 
+    // particularly proud of this function
     fn populate_board(&mut self) {
+        // add mines
+        let mut mine_locations: Vec<bool> = Vec::new();
         let num_cells = self.width * self.height;
 
-        let mut mine_locations: Vec<bool> = Vec::new();
-        
-        // add the correct number of mines as true
-        for _cell in 0..self.num_mines {
+        // add num mines as true to the mine_locations
+        for _ in 0..self.num_mines {
             mine_locations.push(true);
         }
 
-        // fill in the rest with false
-        for _cell in 0..(num_cells - (self.num_mines + 1)) {
+        // add the rest of the cells as false, MINUS ONE for the cursor, that we'll skip over to make sure it's always empty.
+        for _ in 0..((num_cells - self.num_mines) - 1) {
             mine_locations.push(false);
         }
 
-        // self.out.execute(Print(format!("locations len: {}, num_cells: {}, num_mines: {}", mine_locations.len(), num_cells, self.num_mines))).unwrap();
-        // std::thread::sleep(std::time::Duration::from_secs(3));
-
+        // this is where rand comes in. we shuffle the vec to always get random mine placement every time
         mine_locations.shuffle(&mut rand::thread_rng());
 
-        // add to the board
-        let mut current_num = 0;
-
+        // iterate through all of the cells, assigning them as mines if it's positive (and not on the cursor)
+        let mut current_cell = 0;
         for y in 0..self.height {
             for x in 0..self.width {
-                if x != self.selection.0 && y != self.selection.1 {
-                    if mine_locations[current_num] == true {
+                if !(y == self.selection.1 && x == self.selection.0) {
+                    if mine_locations[current_cell] == true {
                         self.data[y][x].1 = Cell::Mine;
                     }
-    
-                    current_num += 1;
+
+                    current_cell += 1;
+                }
+            }
+        }
+
+        // add adjacent squares
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.data[y][x].1 == Cell::Empty {
+                    let mut num_adj_mines = 0;
+
+                    // SOUTH
+                    if !self.cell_is_on_bottom((x, y)) && self.data[y - 1][x].1 == Cell::Mine {
+                        num_adj_mines += 1;
+                    }
+
+                    // NORTH
+                    if !self.cell_is_on_top((x, y)) && self.data[y + 1][x].1 == Cell::Mine {
+                        num_adj_mines += 1;
+                    }
+
+                    // WEST
+                    if !self.cell_is_on_left((x, y)) && self.data[y][x - 1].1 == Cell::Mine {
+                        num_adj_mines += 1;
+                    }
+
+                    // EAST
+                    if !self.cell_is_on_right((x, y)) && self.data[y][x + 1].1 == Cell::Mine {
+                        num_adj_mines += 1;
+                    }
+
+                    // SOUTH EAST
+                    if !self.cell_is_on_bottom((x, y))
+                        && !self.cell_is_on_right((x, y))
+                        && self.data[y - 1][x + 1].1 == Cell::Mine
+                    {
+                        num_adj_mines += 1;
+                    }
+
+                    // SOUTH WEST
+                    if !self.cell_is_on_bottom((x, y))
+                        && !self.cell_is_on_left((x, y))
+                        && self.data[y - 1][x - 1].1 == Cell::Mine
+                    {
+                        num_adj_mines += 1;
+                    }
+
+                    // NORTH EAST
+                    if !self.cell_is_on_top((x, y))
+                        && !self.cell_is_on_right((x, y))
+                        && self.data[y + 1][x + 1].1 == Cell::Mine
+                    {
+                        num_adj_mines += 1;
+                    }
+
+                    // NORTH WEST
+                    if !self.cell_is_on_top((x, y))
+                        && !self.cell_is_on_left((x, y))
+                        && self.data[y + 1][x - 1].1 == Cell::Mine
+                    {
+                        num_adj_mines += 1;
+                    }
+
+                    if num_adj_mines > 0 {
+                        self.data[y][x].1 = Cell::Adjacent(num_adj_mines);
+                    }
                 }
             }
         }
@@ -215,7 +282,7 @@ impl Game {
                         Cell::Empty => self.out.execute(Print(format!("{EMPTY}   ")))?,
                         Cell::Adjacent(num) => self.out.execute(Print(format!("{num}   ")))?,
                         Cell::Mine => self.out.execute(Print(format!("{MINE}   ").bold().red()))?,
-                    }
+                    },
                     true => self.out.execute(Print(format!("{COVERED}   ")))?,
                 };
             }
@@ -233,7 +300,7 @@ impl Game {
 
         for _y in 0..self.height {
             let mut row_data: Vec<(bool, Cell)> = Vec::new();
-    
+
             for _x in 0..self.width {
                 if SHOW_EVERYTHING {
                     row_data.push((false, Cell::Empty));
@@ -241,7 +308,7 @@ impl Game {
                     row_data.push((true, Cell::Empty));
                 }
             }
-    
+
             self.data.push(row_data);
         }
     }
@@ -254,12 +321,12 @@ impl Game {
 
         // hide the cursor
         out.execute(Hide)?;
-        
+
         // loop on every keypress
         loop {
             // clear the screen
             out.execute(Clear(ClearType::All))?.execute(MoveTo(0, 0))?;
-    
+
             // draw the menu
             for line in MENU.split("\n") {
                 // if the line as our number we draw it in bold to show our selection
@@ -268,10 +335,9 @@ impl Game {
                 } else {
                     out.execute(Print(line))?;
                 }
-    
+
                 out.execute(MoveToNextLine(1))?;
             }
-
 
             out.flush()?;
 
@@ -302,18 +368,16 @@ impl Game {
             } else if level < 1 {
                 level = 1;
             }
-    
         }
 
         // make sure the terminal is set back to normal
-        out
-            .execute(Clear(ClearType::All))?
+        out.execute(Clear(ClearType::All))?
             .execute(MoveTo(0, 0))?
             .execute(Show)?;
-    
+
         terminal::disable_raw_mode()?;
         out.flush()?;
-    
+
         // return our level :)
         Ok(level)
     }
@@ -323,8 +387,7 @@ impl Game {
         terminal::disable_raw_mode()?;
         out.flush()?;
 
-        out
-            .execute(Clear(ClearType::All))?
+        out.execute(Clear(ClearType::All))?
             .execute(MoveTo(0, 0))?
             .execute(Show)?;
 
@@ -337,9 +400,8 @@ impl Game {
 
         Self::reset_terminal(&mut out)?;
 
-        out
-            .execute(Print("Thanks for playing!"))?
-            .execute(MoveToNextLine(2))?;    
+        out.execute(Print("Thanks for playing!"))?
+            .execute(MoveToNextLine(2))?;
         Ok(())
     }
 
@@ -394,9 +456,9 @@ impl KeyDetector for Event {
                 KeyCode::Char(char) => match char {
                     ' ' => true,
                     _ => false,
-                }
+                },
                 _ => false,
-            }
+            },
             _ => false,
         }
     }
@@ -409,9 +471,9 @@ impl KeyDetector for Event {
                     'q' => true,
                     'Q' => true,
                     _ => false,
-                }
+                },
                 _ => false,
-            }
+            },
             _ => false,
         }
     }
@@ -427,28 +489,28 @@ impl KeyDetector for Event {
                     } else {
                         Some((game.selection.0, game.selection.1 + 1))
                     }
-                },
+                }
                 KeyCode::Down => {
                     if game.cell_is_on_bottom(game.selection) {
                         Some(game.selection)
                     } else {
                         Some((game.selection.0, game.selection.1 - 1))
                     }
-                },
+                }
                 KeyCode::Left => {
                     if game.cell_is_on_left(game.selection) {
                         Some(game.selection)
                     } else {
                         Some((game.selection.0 - 1, game.selection.1))
                     }
-                },
+                }
                 KeyCode::Right => {
                     if game.cell_is_on_right(game.selection) {
                         Some(game.selection)
                     } else {
                         Some((game.selection.0 + 1, game.selection.1))
                     }
-                },
+                }
                 KeyCode::Char(char) => match char {
                     'w' => {
                         if game.cell_is_on_top(game.selection) {
@@ -456,14 +518,14 @@ impl KeyDetector for Event {
                         } else {
                             Some((game.selection.0, game.selection.1 + 1))
                         }
-                    },
+                    }
                     's' => {
                         if game.cell_is_on_bottom(game.selection) {
                             Some(game.selection)
                         } else {
                             Some((game.selection.0, game.selection.1 - 1))
                         }
-                    },
+                    }
                     'a' => {
                         if game.cell_is_on_left(game.selection) {
                             Some(game.selection)
@@ -477,7 +539,7 @@ impl KeyDetector for Event {
                         } else {
                             Some((game.selection.0 + 1, game.selection.1))
                         }
-                    },
+                    }
                     _ => None,
                 },
                 _ => None,
