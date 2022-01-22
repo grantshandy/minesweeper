@@ -175,36 +175,28 @@ impl Game {
 
     // particularly proud of this function
     fn populate_board(&mut self) {
-        // add mines
-        let mut mine_locations: Vec<bool> = Vec::new();
-        let num_cells = self.width * self.height;
+        // Random mine placement: credit @asuradev99
+       let num_cells = self.width as u16 * self.height as u16;
 
-        // add num mines as true to the mine_locations
-        for _ in 0..self.num_mines {
-            mine_locations.push(true);
-        }
+       let mut mine_indeces: Vec<u16> = (0..num_cells).collect();
 
-        // add the rest of the cells as false, MINUS ONE for the cursor, that we'll skip over to make sure it's always empty.
-        for _ in 0..((num_cells - self.num_mines) - 1) {
-            mine_locations.push(false);
-        }
+       // remove the spot at our cursor from the indices
+       mine_indeces.remove((self.selection.1 * self.width) + self.selection.0);
 
-        // this is where rand comes in. we shuffle the vec to always get random mine placement every time
-        mine_locations.shuffle(&mut rand::thread_rng());
+       // remove all the spots around our cursor so that we don't click on an adjacent square.
+       for (x, y, _cell) in self.get_surrounding_cells((self.selection.0, self.selection.1)) {
+            mine_indeces.remove((y * self.width) + x);
+       }
 
-        // iterate through all of the cells, assigning them as mines if it's positive (and not on the cursor)
-        let mut current_cell = 0;
-        for y in 0..self.height {
-            for x in 0..self.width {
-                if !(y == self.selection.1 && x == self.selection.0) {
-                    if mine_locations[current_cell] == true {
-                        self.data[y][x].1 = Cell::Mine;
-                    }
+       // shuffle mine placement
+       mine_indeces.shuffle(&mut rand::thread_rng());
 
-                    current_cell += 1;
-                }
-            }
-        }
+       // place mines on board based on indices
+       for i in &mine_indeces[0..self.num_mines] {
+           let x = (i % self.width as u16) as usize;
+           let y = (i / self.height as u16) as usize;
+           self.data[y][x].1 = Cell::Mine;
+       }
 
         // add adjacent cells
         for y in 0..self.height {
@@ -405,14 +397,14 @@ impl Game {
     fn get_surrounding_cells(&self, cell: (usize, usize)) -> Vec<(usize, usize, Cell)> {
         let cell = (cell.0 as isize, cell.1 as isize);
         let directions = [
-            (-1, 1),
-            (-1, 0),
-            (-1, -1),
-            (0, 1),
-            (0, -1),
-            (1, 1),
-            (1, 0),
-            (1, -1),
+            (-1, 1), // NW
+            (-1, 0), // W
+            (-1, -1), // SW
+            (0, 1), // N
+            (0, -1), // S
+            (1, 1), // NE
+            (1, 0), // E
+            (1, -1), // SE
         ];
 
         let mut cells = Vec::new();
