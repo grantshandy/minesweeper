@@ -239,8 +239,14 @@ impl Game {
                 match *uncovered {
                     false => match *cell {
                         Cell::Empty => self.out.execute(Print(format!("{EMPTY}{SPACE_WIDTH}")))?,
-                        Cell::Adjacent(num) => self.out.execute(Print(format!("{num}{SPACE_WIDTH}")))?,
-                        Cell::Mine => self.out.execute(Print(format!("{}{}", MINE.red().bold(), SPACE_WIDTH)))?,
+                        Cell::Adjacent(num) => {
+                            self.out.execute(Print(format!("{num}{SPACE_WIDTH}")))?
+                        }
+                        Cell::Mine => self.out.execute(Print(format!(
+                            "{}{}",
+                            MINE.red().bold(),
+                            SPACE_WIDTH
+                        )))?,
                     },
                     true => self.out.execute(Print(format!("{COVERED}{SPACE_WIDTH}")))?,
                 };
@@ -398,25 +404,33 @@ impl Game {
 
     fn get_surrounding_cells(&self, cell: (usize, usize)) -> Vec<(usize, usize, Cell)> {
         let cell = (cell.0 as isize, cell.1 as isize);
-        let directions = [(-1, 1), (-1, 0), (-1, -1), (0, 1), (0, -1), (1, 1), (1, 0), (1, -1),];
+        let directions = [
+            (-1, 1),
+            (-1, 0),
+            (-1, -1),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, 0),
+            (1, -1),
+        ];
 
         let mut cells = Vec::new();
 
         for d in directions {
-            let sy = cell.1 + d.1;
-
-            if sy > 0 && self.data.get(sy as usize) != None {
-                let sx = cell.0 + d.0;
-
-                if sx > 0 && self.data[sy as usize].get(sx as usize) != None {
-                    cells.push((sx as usize, sy as usize, self.data[sy as usize][sx as usize].1));
-                }
+            if self.data.get((cell.1 + d.1) as usize) != None
+                && self.data[(cell.1 + d.1) as usize].get((cell.0 + d.0) as usize) != None
+            {
+                cells.push((
+                    (cell.0 + d.0) as usize,
+                    (cell.1 + d.1) as usize,
+                    self.data[(cell.1 + d.1) as usize][(cell.0 + d.0) as usize].1,
+                ));
             }
         }
 
         return cells;
     }
-
 }
 
 trait KeyDetector {
