@@ -8,4 +8,4 @@ edition = "2021"
 [dependencies]
 clap = { version = "3.0", features = ["cargo"] }
 crossterm = "0.22"
-rand = "0.8.4"
+rand = "0.8"

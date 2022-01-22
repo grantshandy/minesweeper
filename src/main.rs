@@ -27,6 +27,12 @@ const EMPTY: char = ' ';
 const MINE: char = '!';
 const COVERED: char = 'X';
 
+// characters (spaces) between cells
+const SPACE_WIDTH: &'static str = "   ";
+
+// number of newlines between rows (>= 1)
+const SPACE_HEIGHT: usize = 2;
+
 // uncover everything at the beginning
 // use this for debugging
 const SHOW_EVERYTHING: bool = true;
@@ -96,7 +102,6 @@ impl Game {
 
         // starts at 0!! the board starts at 1.
         let selection = ((width / 2), (width / 2));
-        // let selection = (0, 0);
 
         let mut myself = Self {
             out,
@@ -160,8 +165,8 @@ impl Game {
 
     fn update_cursor(&mut self) -> Result<()> {
         // move our cursor to the correct position
-        let right = (self.selection.0 * 4) as u16;
-        let up = ((self.height - (self.selection.1 + 1)) * 2) as u16;
+        let right = (self.selection.0 * (SPACE_WIDTH.chars().count() + 1)) as u16;
+        let up = ((self.height - (self.selection.1 + 1)) * SPACE_HEIGHT) as u16;
 
         self.out.execute(MoveTo(right, up))?;
 
@@ -201,62 +206,16 @@ impl Game {
             }
         }
 
-        // add adjacent squares
+        // add adjacent cells
         for y in 0..self.height {
             for x in 0..self.width {
                 if self.data[y][x].1 == Cell::Empty {
                     let mut num_adj_mines = 0;
 
-                    // SOUTH
-                    if !self.cell_is_on_bottom((x, y)) && self.data[y - 1][x].1 == Cell::Mine {
-                        num_adj_mines += 1;
-                    }
-
-                    // NORTH
-                    if !self.cell_is_on_top((x, y)) && self.data[y + 1][x].1 == Cell::Mine {
-                        num_adj_mines += 1;
-                    }
-
-                    // WEST
-                    if !self.cell_is_on_left((x, y)) && self.data[y][x - 1].1 == Cell::Mine {
-                        num_adj_mines += 1;
-                    }
-
-                    // EAST
-                    if !self.cell_is_on_right((x, y)) && self.data[y][x + 1].1 == Cell::Mine {
-                        num_adj_mines += 1;
-                    }
-
-                    // SOUTH EAST
-                    if !self.cell_is_on_bottom((x, y))
-                        && !self.cell_is_on_right((x, y))
-                        && self.data[y - 1][x + 1].1 == Cell::Mine
-                    {
-                        num_adj_mines += 1;
-                    }
-
-                    // SOUTH WEST
-                    if !self.cell_is_on_bottom((x, y))
-                        && !self.cell_is_on_left((x, y))
-                        && self.data[y - 1][x - 1].1 == Cell::Mine
-                    {
-                        num_adj_mines += 1;
-                    }
-
-                    // NORTH EAST
-                    if !self.cell_is_on_top((x, y))
-                        && !self.cell_is_on_right((x, y))
-                        && self.data[y + 1][x + 1].1 == Cell::Mine
-                    {
-                        num_adj_mines += 1;
-                    }
-
-                    // NORTH WEST
-                    if !self.cell_is_on_top((x, y))
-                        && !self.cell_is_on_left((x, y))
-                        && self.data[y + 1][x - 1].1 == Cell::Mine
-                    {
-                        num_adj_mines += 1;
+                    for cell in self.get_surrounding_cells((x, y)) {
+                        if cell.2 == Cell::Mine {
+                            num_adj_mines += 1;
+                        }
                     }
 
                     if num_adj_mines > 0 {
@@ -279,15 +238,15 @@ impl Game {
             for (uncovered, cell) in line {
                 match *uncovered {
                     false => match *cell {
-                        Cell::Empty => self.out.execute(Print(format!("{EMPTY}   ")))?,
-                        Cell::Adjacent(num) => self.out.execute(Print(format!("{num}   ")))?,
-                        Cell::Mine => self.out.execute(Print(format!("{MINE}   ").bold().red()))?,
+                        Cell::Empty => self.out.execute(Print(format!("{EMPTY}{SPACE_WIDTH}")))?,
+                        Cell::Adjacent(num) => self.out.execute(Print(format!("{num}{SPACE_WIDTH}")))?,
+                        Cell::Mine => self.out.execute(Print(format!("{}{}", MINE.red().bold(), SPACE_WIDTH)))?,
                     },
-                    true => self.out.execute(Print(format!("{COVERED}   ")))?,
+                    true => self.out.execute(Print(format!("{COVERED}{SPACE_WIDTH}")))?,
                 };
             }
 
-            self.out.execute(MoveToNextLine(2))?;
+            self.out.execute(MoveToNextLine(SPACE_HEIGHT as u16))?;
         }
 
         self.update_cursor()?;
@@ -339,8 +298,6 @@ impl Game {
                 out.execute(MoveToNextLine(1))?;
             }
 
-            out.flush()?;
-
             // get our event
             // this blocks so the loop doesn't run constantly
             let event = event::read()?;
@@ -357,6 +314,10 @@ impl Game {
                     KeyCode::Up => level - 1,
                     KeyCode::Down => level + 1,
                     KeyCode::Enter => break,
+                    KeyCode::Char(char) => match char {
+                        ' ' => break,
+                        _ => continue,
+                    },
                     _ => continue,
                 },
                 _ => continue,
@@ -370,13 +331,7 @@ impl Game {
             }
         }
 
-        // make sure the terminal is set back to normal
-        out.execute(Clear(ClearType::All))?
-            .execute(MoveTo(0, 0))?
-            .execute(Show)?;
-
-        terminal::disable_raw_mode()?;
-        out.flush()?;
+        Self::reset_terminal(out)?;
 
         // return our level :)
         Ok(level)
@@ -440,6 +395,28 @@ impl Game {
 
         return false;
     }
+
+    fn get_surrounding_cells(&self, cell: (usize, usize)) -> Vec<(usize, usize, Cell)> {
+        let cell = (cell.0 as isize, cell.1 as isize);
+        let directions = [(-1, 1), (-1, 0), (-1, -1), (0, 1), (0, -1), (1, 1), (1, 0), (1, -1),];
+
+        let mut cells = Vec::new();
+
+        for d in directions {
+            let sy = cell.1 + d.1;
+
+            if sy > 0 && self.data.get(sy as usize) != None {
+                let sx = cell.0 + d.0;
+
+                if sx > 0 && self.data[sy as usize].get(sx as usize) != None {
+                    cells.push((sx as usize, sy as usize, self.data[sy as usize][sx as usize].1));
+                }
+            }
+        }
+
+        return cells;
+    }
+
 }
 
 trait KeyDetector {
@@ -484,67 +461,53 @@ impl KeyDetector for Event {
         match self {
             Event::Key(key) => match key.code {
                 KeyCode::Up => {
-                    if game.cell_is_on_top(game.selection) {
-                        Some(game.selection)
-                    } else {
-                        Some((game.selection.0, game.selection.1 + 1))
+                    if !game.cell_is_on_top(game.selection) {
+                        return Some((game.selection.0, game.selection.1 + 1));
                     }
                 }
                 KeyCode::Down => {
-                    if game.cell_is_on_bottom(game.selection) {
-                        Some(game.selection)
-                    } else {
-                        Some((game.selection.0, game.selection.1 - 1))
+                    if !game.cell_is_on_bottom(game.selection) {
+                        return Some((game.selection.0, game.selection.1 - 1));
                     }
                 }
                 KeyCode::Left => {
-                    if game.cell_is_on_left(game.selection) {
-                        Some(game.selection)
-                    } else {
-                        Some((game.selection.0 - 1, game.selection.1))
+                    if !game.cell_is_on_left(game.selection) {
+                        return Some((game.selection.0 - 1, game.selection.1));
                     }
                 }
                 KeyCode::Right => {
-                    if game.cell_is_on_right(game.selection) {
-                        Some(game.selection)
-                    } else {
-                        Some((game.selection.0 + 1, game.selection.1))
+                    if !game.cell_is_on_right(game.selection) {
+                        return Some((game.selection.0 + 1, game.selection.1));
                     }
                 }
                 KeyCode::Char(char) => match char {
                     'w' => {
-                        if game.cell_is_on_top(game.selection) {
-                            Some(game.selection)
-                        } else {
-                            Some((game.selection.0, game.selection.1 + 1))
+                        if !game.cell_is_on_top(game.selection) {
+                            return Some((game.selection.0, game.selection.1 + 1));
                         }
                     }
                     's' => {
-                        if game.cell_is_on_bottom(game.selection) {
-                            Some(game.selection)
-                        } else {
-                            Some((game.selection.0, game.selection.1 - 1))
+                        if !game.cell_is_on_bottom(game.selection) {
+                            return Some((game.selection.0, game.selection.1 - 1));
                         }
                     }
                     'a' => {
-                        if game.cell_is_on_left(game.selection) {
-                            Some(game.selection)
-                        } else {
-                            Some((game.selection.0 - 1, game.selection.1))
+                        if !game.cell_is_on_left(game.selection) {
+                            return Some((game.selection.0 - 1, game.selection.1));
                         }
                     }
                     'd' => {
-                        if game.cell_is_on_right(game.selection) {
-                            Some(game.selection)
-                        } else {
-                            Some((game.selection.0 + 1, game.selection.1))
+                        if !game.cell_is_on_right(game.selection) {
+                            return Some((game.selection.0 + 1, game.selection.1));
                         }
                     }
-                    _ => None,
+                    _ => return None,
                 },
-                _ => None,
+                _ => return None,
             },
-            _ => None,
-        }
+            _ => return None,
+        };
+
+        return Some(game.selection);
     }
 }
