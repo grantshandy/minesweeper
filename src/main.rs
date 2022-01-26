@@ -10,12 +10,15 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     ExecutableCommand, Result,
 };
+
 use rand::prelude::SliceRandom;
 
 const MENU: &'static str = r#"Welcome to Minesweeper
+Copyright 2022 Grant Handy
 
 Controls:
     q - quit
+    r - restart
     arrow keys/wasd - navigate board
     enter/space - uncover cell
     m/? - mark cell
@@ -29,11 +32,11 @@ const MINE: char = '!';
 const COVERED: char = 'x';
 const MARKED: char = '?';
 
-// characters (spaces) between cells
+// characters (spaces) between cells (default "   ")
 const SPACE_WIDTH: &'static str = "   ";
 
-// number of newlines between rows (>= 1)
-const SPACE_HEIGHT: usize = 2;
+// number of newlines between rows (default 1)
+const SPACE_HEIGHT: usize = 1;
 
 // uncover everything at the beginning
 // use this for debugging
@@ -56,7 +59,7 @@ fn main() {
 fn game_loop(level: Option<&str>) -> Result<()> {
     loop {
         let game = match level {
-            Some(level) => Game::run(stdout(), level.parse::<usize>().unwrap_or(1)),
+            Some(level) => Game::run(stdout(), level.parse::<u8>().unwrap_or(1)),
             None => Game::init(),
         };
 
@@ -64,7 +67,7 @@ fn game_loop(level: Option<&str>) -> Result<()> {
             Ok(restart) => match restart {
                 true => continue,
                 false => break,
-            }
+            },
             Err(error) => return Err(error),
         }
     }
@@ -93,6 +96,8 @@ enum Input {
     Quit,
     // m
     Mark,
+    // r
+    Restart
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -104,7 +109,7 @@ struct Cell {
 
 pub struct Game {
     out: Stdout,
-    // Y<X<(covered, CellType)>>
+    // Y<X<Cell>>
     data: Vec<Vec<Cell>>,
     num_mines: usize,
     width: usize,
@@ -115,6 +120,7 @@ pub struct Game {
 }
 
 impl Game {
+    // ask the user for their level
     pub fn init() -> Result<bool> {
         let mut out = stdout();
         let level = Self::choose_level(&mut out)?;
@@ -122,7 +128,8 @@ impl Game {
         Self::run(out, level)
     }
 
-    pub fn run(out: Stdout, level: usize) -> Result<bool> {
+    // start the game already knowing the user's level
+    pub fn run(out: Stdout, level: u8) -> Result<bool> {
         let data = Vec::new();
         let is_touched = false;
 
@@ -167,79 +174,135 @@ impl Game {
         myself.update_cursor()?;
 
         loop {
-            // this event blocks the thread so we don't loop forever and ruin performance.
+            // this event blocks the thread until we get a keypress
             let event = event::read()?;
 
+            // get an Input from the event
             match myself.get_input(event) {
+                // if we have one...
                 Some(input) => match input {
+                    // if it's a new direction update the cursor and reload the loop.
                     Input::Direction(next_selection) => {
                         myself.selection = next_selection;
                         myself.update_cursor()?;
                         continue;
                     }
+                    // if the user said to mark the cell
                     Input::Mark => {
+                        // if it isn't already marked and uncovered
                         if !myself.get_current_cell().marked && myself.get_current_cell().covered {
+                            // mark it
                             myself.data[myself.selection.1][myself.selection.0].marked = true;
-                        } else {
+                        } else if myself.get_current_cell().covered {
+                            // otherwise unmark it if it's covered
                             myself.data[myself.selection.1][myself.selection.0].marked = false;
+                        } else {
+                            // if it's uncovered already then restart the loop. no need to redraw and fill up the terminal buffer.
+                            continue;
                         }
                     }
-                    Input::Quit => {
-                        return Ok(false);
-                    }
+                    // if the user quit then end the function sending "false" which means don't restart it. Go to the exit message.
+                    Input::Quit => return Ok(false),
+                    // if the user selected the cell...
                     Input::Select => {
+                        // if we haven't touched the board yet populate the board so the user doesn't click on a mine their first try
                         if !myself.is_touched {
                             myself.is_touched = true;
-                            myself.data[myself.selection.1][myself.selection.0].marked = false;
                             myself.populate_board();
                         }
 
+                        // if we clicked on an uncovered on restart the loop and don't redraw
+                        if !myself.get_current_cell().covered {
+                            continue;
+                        }
+
+                        // uncover the cell
                         myself.uncover_current_cell();
-                    }
+                    },
+                    Input::Restart => return Ok(true),
                 },
+                // if the input was not a recognized one then restart the loop and wait for the next input.
+                // the less times we redraw the board the better, we don't want to fill up the terminal buffer.
                 None => continue,
             }
 
-            if myself.get_current_cell().cell_type == CellType::Mine && myself.get_current_cell().covered == false {
-                myself.out.execute(Hide)?;
-
-                loop {
-                    myself.draw_board()?;
-                    myself.out
-                        .execute(MoveTo(0, ((SPACE_HEIGHT * myself.height) + 1) as u16))?
-                        .execute(Print("You lost! press r to restart and q to quit"))?;
-
-                    let event = event::read()?;
-
-                    if event == Event::Key(KeyEvent {
-                        code: KeyCode::Char('q'),
-                        modifiers: KeyModifiers::empty(),
-                    }) {
-                        return Ok(false);
-                    } else if event == Event::Key(KeyEvent {
-                        code: KeyCode::Char('r'),
-                        modifiers: KeyModifiers::empty(),
-                    }) {
-                        return Ok(true);
-                    }
-                }
+            // if we clicked on a mine go to the losing screen.
+            if myself.get_current_cell().cell_type == CellType::Mine
+                && myself.get_current_cell().covered == false
+            {
+                return myself.end_screen("You lost! press r to try again and q to quit");
             }
 
-            // update the board after everything else is done
+            // if we won go to the winning screen
+            if myself.has_won() {
+                return myself.end_screen("You won! press r to play again and q to quit");
+            }
+
+            // update the board on screen after everything else is done
             myself.draw_board()?;
         }
     }
 
-    // fn has_won(&mut self) -> bool {
-    //     for y in self.data {
-    //         for x in y {
-    //             if cell.cell_type == Cell::Mine && cell.covered == false {
-    //                 return 
-    //             }
-    //         }
-    //     }
-    // }
+    // the screen that shows up when you lose or win
+    fn end_screen(&mut self, message: &str) -> Result<bool> {
+        // hide the cursor
+        self.out.execute(Hide)?;
 
+        // show everything to the user because they've lost
+        // it's nice for them to see how they could've won
+        self.show_everything = true;
+
+        // update the board state
+        self.draw_board()?;
+
+        // print the "you lost" message at the bottom of the board
+        self.out
+            .execute(MoveTo(0, (((SPACE_HEIGHT + 1) * self.height) + 1) as u16))?
+            .execute(Print(message.bold()))?;
+
+        // loop through the events.
+        loop {
+            let event = event::read()?;
+
+            match event {
+                Event::Key(key) => match key.code {
+                    KeyCode::Char(char) => match char {
+                        // return false because we don't want to restart
+                        'q' => return Ok(false),
+                        // return true because we want to restart
+                        'r' => return Ok(true),
+                        _ => continue,
+                    },
+                    _ => continue,
+                },
+                _ => continue,
+            }
+        }
+    }
+
+    fn has_won(&mut self) -> bool {
+        let mut num_uncovered_cells = 0;
+
+        for y in &self.data {
+            for cell in y {
+                if !cell.covered {
+                    if cell.cell_type == CellType::Mine {
+                        return false;
+                    }
+
+                    num_uncovered_cells += 1;
+                }
+            }
+        }
+
+        if num_uncovered_cells == ((self.width * self.height) - self.num_mines) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    // uncover the cell the cursor is currently on
     fn uncover_current_cell(&mut self) {
         // clear the current cell
         self.data[self.selection.1][self.selection.0].covered = false;
@@ -251,6 +314,7 @@ impl Game {
         }
     }
 
+    // recursively remove the surrounding empty cells of a cell
     fn remove_surrounding_empty_cells(&mut self, cell: (usize, usize)) {
         for (x, y, cell_type) in self.get_surrounding_cells(cell) {
             if cell_type == CellType::Empty && self.data[y][x].covered == true {
@@ -262,62 +326,71 @@ impl Game {
         }
     }
 
+    // a simple shortcut function that gives us the Cell the cursor is at
     fn get_current_cell(&self) -> Cell {
         return self.data[self.selection.1][self.selection.0];
     }
 
+    // update's the cursor's position on screen from memory. this doesn't take a terminal redraw.
     fn update_cursor(&mut self) -> Result<()> {
-        // move our cursor to the correct position
         let right = (self.selection.0 * (SPACE_WIDTH.chars().count() + 1)) as u16;
-        let up = ((self.height - (self.selection.1 + 1)) * SPACE_HEIGHT) as u16;
+        let up = ((self.height - (self.selection.1 + 1)) * (SPACE_HEIGHT + 1)) as u16;
 
         self.out.execute(MoveTo(right, up))?;
 
         Ok(())
     }
 
-    // particularly proud of this function
+    // this was the most technical function in the program, it randomly places mines on the board
+    // the hardest part was not placing any mines where the user's cursor is, and not adjacent to the cursor either
+    // this is done so that the user's first click is not on a bomb or adjacent square so they can have a chance to win each time
     fn populate_board(&mut self) {
         // Random mine placement indice idea: credit @asuradev99
         let num_cells = self.width * self.height;
 
-        let mut mine_indeces: Vec<usize> = (0..num_cells).collect();
+        let mut mine_indices: Vec<usize> = (0..num_cells).collect();
 
         // remove the spot at our cursor from the indices
-        mine_indeces.remove((self.selection.1 * self.width) + self.selection.0);
+        mine_indices.remove((self.selection.1 * self.width) + self.selection.0);
 
         // remove all the spots around our cursor so that we don't click on an adjacent square.
-        for (x, y, _cell) in self.get_surrounding_cells((self.selection.0, self.selection.1)) {
-            mine_indeces.remove(
-                mine_indeces
+        for (x, y, _cell) in self.get_surrounding_cells(self.selection) {
+            // we need to search the indices by value for the correct index to remove using rposition.
+            // this is done because each time we remove a cell it skews the positions of all other ones by 1.
+            mine_indices.remove(
+                mine_indices
                     .iter()
                     .rposition(|&a| a == ((y * self.width) + x))
                     .unwrap(),
             );
         }
 
-        // shuffle mine placement
-        mine_indeces.shuffle(&mut rand::thread_rng());
+        // shuffle mine placement using rand
+        mine_indices.shuffle(&mut rand::thread_rng());
 
         // place mines on board based on indices
-        for i in &mine_indeces[0..self.num_mines] {
+        for i in &mine_indices[0..self.num_mines] {
             let x = i % self.width;
             let y = i / self.height;
             self.data[y][x].cell_type = CellType::Mine;
         }
 
-        // add adjacent cells
+        // add "adjacent" cells based on where the bombs are
         for y in 0..self.height {
             for x in 0..self.width {
+                // if the cell is empty
                 if self.data[y][x].cell_type == CellType::Empty {
+                    // the number of adjacent mines to the cell
                     let mut num_adj_mines = 0;
 
+                    // go through all the surrounding cells and add one to num_adj_mines if the cell is a mine
                     for cell in self.get_surrounding_cells((x, y)) {
                         if cell.2 == CellType::Mine {
                             num_adj_mines += 1;
                         }
                     }
 
+                    // if we have any adjacent mines set our cell's type as adjacent with the number of mines
                     if num_adj_mines > 0 {
                         self.data[y][x].cell_type = CellType::Adjacent(num_adj_mines);
                     }
@@ -326,22 +399,28 @@ impl Game {
         }
     }
 
+    // draw the board to the terminal based on the game's internal state
     fn draw_board(&mut self) -> Result<()> {
-        // clear the screen
+        // clear the screen and move to 0,0
         self.out
             .execute(Clear(ClearType::All))?
             .execute(MoveTo(0, 0))?;
 
-        // draw all of the dots
-        // we reverse the iterator so that we'll show the data from the bottom up while still drawing from the top down
+        // draw all of the cells
+        // we reverse the iterator so that we'll show the data from the bottom up (1st quadrant of a Cartesian plane) while still drawing from the top down
         for line in self.data.iter().rev() {
             for cell in line {
-                if cell.marked {
+                // if the cell is marked we aren't showing everything
+                if cell.marked && !self.show_everything {
+                    // print the marked symbol as cyan and bold
                     self.out
                         .execute(Print(&format!("{}{}", MARKED.cyan().bold(), SPACE_WIDTH)))?;
+                // if the cell is covered and we aren't showing everything
                 } else if cell.covered && !self.show_everything {
+                    // print the covered symbol
                     self.out.execute(Print(format!("{COVERED}{SPACE_WIDTH}")))?;
                 } else {
+                    // else print the symbol from what the data is normally
                     match cell.cell_type {
                         CellType::Empty => {
                             self.out.execute(Print(format!("{EMPTY}{SPACE_WIDTH}")))?
@@ -360,7 +439,9 @@ impl Game {
                 }
             }
 
-            self.out.execute(MoveToNextLine(SPACE_HEIGHT as u16))?;
+            // move the correct number of lines :)
+            self.out
+                .execute(MoveToNextLine((SPACE_HEIGHT + 1) as u16))?;
         }
 
         self.update_cursor()?;
@@ -386,7 +467,7 @@ impl Game {
         }
     }
 
-    fn choose_level<W: Write>(out: &mut W) -> Result<usize> {
+    fn choose_level<W: Write>(out: &mut W) -> Result<u8> {
         let mut level = 1;
         let mut out = out;
 
@@ -534,6 +615,7 @@ impl Game {
                     'd' => (selection.0 + 1, selection.1),
                     'm' => return Some(Input::Mark),
                     '?' => return Some(Input::Mark),
+                    'r' => return Some(Input::Restart),
                     _ => return None,
                 },
                 _ => return None,
