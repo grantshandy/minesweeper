@@ -5,7 +5,7 @@ use std::io::{stdout, Stdout, Write};
 
 use crossterm::{
     cursor::{Hide, MoveTo, MoveToNextLine, Show},
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode},
     style::{Print, Stylize},
     terminal::{self, Clear, ClearType},
     ExecutableCommand, Result,
@@ -34,8 +34,7 @@ const MARKED: char = '?';
 
 // characters (spaces) between cells (default "   ")
 const SPACE_WIDTH: &'static str = "   ";
-
-// number of newlines between rows (default 1)
+// number of newlines inbetween lines
 const SPACE_HEIGHT: usize = 1;
 
 // uncover everything at the beginning
@@ -47,7 +46,15 @@ fn main() {
         .arg(arg!(-l --level <LEVEL> "Which level to play (1-3, defaults to 1 if other is specified)").required(false))
         .get_matches();
 
-    match game_loop(app.value_of("level")) {
+    let res = match game_loop(app.value_of("level"), stdout()) {
+        Ok(mut out) => match Game::exit_message(&mut out) {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(error),
+    };
+
+    match res {
         Ok(_) => (),
         Err(error) => {
             eprintln!("Error: {}", error);
@@ -56,14 +63,17 @@ fn main() {
     }
 }
 
-fn game_loop(level: Option<&str>) -> Result<()> {
-    loop {
-        let game = match level {
-            Some(level) => Game::run(stdout(), level.parse::<u8>().unwrap_or(1)),
-            None => Game::init(),
-        };
+fn game_loop(level: Option<&str>, out: Stdout) -> Result<Stdout> {
+    let mut game = match Game::new(level) {
+        Ok(game) => match game {
+            Some(game) => game,
+            None => return Ok(out),
+        },
+        Err(error) => return Err(error),
+    };
 
-        match game {
+    loop {
+        match game.run() {
             Ok(restart) => match restart {
                 true => continue,
                 false => break,
@@ -72,12 +82,7 @@ fn game_loop(level: Option<&str>) -> Result<()> {
         }
     }
 
-    let mut out = stdout();
-
-    Game::reset_terminal(&mut out)?;
-    Game::exit_message(&mut out)?;
-
-    Ok(())
+    Ok(out)
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -97,7 +102,7 @@ enum Input {
     // m
     Mark,
     // r
-    Restart
+    Restart,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -108,30 +113,37 @@ struct Cell {
 }
 
 pub struct Game {
+    // we use a single Stdout for simplicity
     out: Stdout,
-    // Y<X<Cell>>
+    // board data: Y<X<Cell>>
     data: Vec<Vec<Cell>>,
+    // number of mines on the board
     num_mines: usize,
+    // width of the board
     width: usize,
+    // height of the board
     height: usize,
+    // coordinates of where our cursor is at the moment
     selection: (usize, usize),
+    // if the board has been touched
     is_touched: bool,
+    // if we should show everything
     show_everything: bool,
 }
 
 impl Game {
-    // ask the user for their level
-    pub fn init() -> Result<bool> {
+    pub fn new(level: Option<&str>) -> Result<Option<Self>> {
         let mut out = stdout();
-        let level = Self::choose_level(&mut out)?;
-
-        Self::run(out, level)
-    }
-
-    // start the game already knowing the user's level
-    pub fn run(out: Stdout, level: u8) -> Result<bool> {
         let data = Vec::new();
         let is_touched = false;
+
+        let level = match level {
+            Some(level) => level.parse::<u8>().unwrap_or(1),
+            None => match Self::choose_level(&mut out)? {
+                Some(level) => level,
+                None => return Ok(None),
+            },
+        };
 
         let (width, height) = match level {
             1 => (9, 9),
@@ -148,10 +160,10 @@ impl Game {
         };
 
         // starts at 0!! the board starts at 1.
-        let selection = ((width / 2), (width / 2));
+        let selection = ((width / 2), (height / 2));
         let show_everything = SHOW_EVERYTHING;
 
-        let mut myself = Self {
+        Ok(Some(Self {
             out,
             data,
             num_mines,
@@ -160,42 +172,49 @@ impl Game {
             selection,
             is_touched,
             show_everything,
-        };
+        }))
+    }
 
-        myself.create_blank_board();
+    pub fn run(&mut self) -> Result<bool> {
+        self.create_blank_board();
+
+        // reset data from last game
+        self.selection = ((self.width / 2), (self.height / 2));
+        self.show_everything = SHOW_EVERYTHING;
+        self.is_touched = false;
 
         terminal::enable_raw_mode()?;
 
         // show the cursor
-        myself.out.execute(Show)?;
+        self.out.execute(Show)?;
 
         // draw the boards initial state
-        myself.draw_board()?;
-        myself.update_cursor()?;
+        self.draw_board()?;
+        self.update_cursor()?;
 
         loop {
             // this event blocks the thread until we get a keypress
             let event = event::read()?;
 
             // get an Input from the event
-            match myself.get_input(event) {
+            match self.get_input(event) {
                 // if we have one...
                 Some(input) => match input {
                     // if it's a new direction update the cursor and reload the loop.
                     Input::Direction(next_selection) => {
-                        myself.selection = next_selection;
-                        myself.update_cursor()?;
+                        self.selection = next_selection;
+                        self.update_cursor()?;
                         continue;
                     }
                     // if the user said to mark the cell
                     Input::Mark => {
                         // if it isn't already marked and uncovered
-                        if !myself.get_current_cell().marked && myself.get_current_cell().covered {
+                        if !self.get_current_cell().marked && self.get_current_cell().covered {
                             // mark it
-                            myself.data[myself.selection.1][myself.selection.0].marked = true;
-                        } else if myself.get_current_cell().covered {
+                            self.data[self.selection.1][self.selection.0].marked = true;
+                        } else if self.get_current_cell().covered {
                             // otherwise unmark it if it's covered
-                            myself.data[myself.selection.1][myself.selection.0].marked = false;
+                            self.data[self.selection.1][self.selection.0].marked = false;
                         } else {
                             // if it's uncovered already then restart the loop. no need to redraw and fill up the terminal buffer.
                             continue;
@@ -206,19 +225,19 @@ impl Game {
                     // if the user selected the cell...
                     Input::Select => {
                         // if we haven't touched the board yet populate the board so the user doesn't click on a mine their first try
-                        if !myself.is_touched {
-                            myself.is_touched = true;
-                            myself.populate_board();
+                        if !self.is_touched {
+                            self.is_touched = true;
+                            self.populate_board();
                         }
 
                         // if we clicked on an uncovered on restart the loop and don't redraw
-                        if !myself.get_current_cell().covered {
+                        if !self.get_current_cell().covered {
                             continue;
                         }
 
                         // uncover the cell
-                        myself.uncover_current_cell();
-                    },
+                        self.uncover_cell(self.selection);
+                    }
                     Input::Restart => return Ok(true),
                 },
                 // if the input was not a recognized one then restart the loop and wait for the next input.
@@ -227,19 +246,19 @@ impl Game {
             }
 
             // if we clicked on a mine go to the losing screen.
-            if myself.get_current_cell().cell_type == CellType::Mine
-                && myself.get_current_cell().covered == false
+            if self.get_current_cell().cell_type == CellType::Mine
+                && self.get_current_cell().covered == false
             {
-                return myself.end_screen("You lost! press r to try again and q to quit");
+                return self.end_screen("You lost! press r to try again and q to quit");
             }
 
             // if we won go to the winning screen
-            if myself.has_won() {
-                return myself.end_screen("You won! press r to play again and q to quit");
+            if self.has_won() {
+                return self.end_screen("You won! press r to play again and q to quit");
             }
 
             // update the board on screen after everything else is done
-            myself.draw_board()?;
+            self.draw_board()?;
         }
     }
 
@@ -255,7 +274,7 @@ impl Game {
         // update the board state
         self.draw_board()?;
 
-        // print the "you lost" message at the bottom of the board
+        // print the message at the bottom of the board
         self.out
             .execute(MoveTo(0, (((SPACE_HEIGHT + 1) * self.height) + 1) as u16))?
             .execute(Print(message.bold()))?;
@@ -303,14 +322,14 @@ impl Game {
     }
 
     // uncover the cell the cursor is currently on
-    fn uncover_current_cell(&mut self) {
+    fn uncover_cell(&mut self, cell: (usize, usize)) {
         // clear the current cell
-        self.data[self.selection.1][self.selection.0].covered = false;
-        self.data[self.selection.1][self.selection.0].marked = false;
+        self.data[cell.1][cell.0].covered = false;
+        self.data[cell.1][cell.0].marked = false;
 
-        // clear the empty cells around it if we're already empty
+        // clear the empty cells around it if we're empty
         if self.get_current_cell().cell_type == CellType::Empty {
-            self.remove_surrounding_empty_cells(self.selection);
+            self.remove_surrounding_empty_cells(cell);
         }
     }
 
@@ -319,9 +338,11 @@ impl Game {
         for (x, y, cell_type) in self.get_surrounding_cells(cell) {
             if cell_type == CellType::Empty && self.data[y][x].covered == true {
                 self.data[y][x].covered = false;
+                self.data[y][x].marked = false;
                 self.remove_surrounding_empty_cells((x, y));
             } else {
                 self.data[y][x].covered = false;
+                self.data[y][x].marked = false;
             }
         }
     }
@@ -411,32 +432,31 @@ impl Game {
         for line in self.data.iter().rev() {
             for cell in line {
                 // if the cell is marked we aren't showing everything
-                if cell.marked && !self.show_everything {
+                let cell = if cell.marked && !self.show_everything {
                     // print the marked symbol as cyan and bold
-                    self.out
-                        .execute(Print(&format!("{}{}", MARKED.cyan().bold(), SPACE_WIDTH)))?;
+                    format!("{}{}", MARKED.cyan().bold(), SPACE_WIDTH)
                 // if the cell is covered and we aren't showing everything
                 } else if cell.covered && !self.show_everything {
                     // print the covered symbol
-                    self.out.execute(Print(format!("{COVERED}{SPACE_WIDTH}")))?;
+                    format!("{COVERED}{SPACE_WIDTH}")
                 } else {
                     // else print the symbol from what the data is normally
                     match cell.cell_type {
-                        CellType::Empty => {
-                            self.out.execute(Print(format!("{EMPTY}{SPACE_WIDTH}")))?
-                        }
-                        CellType::Adjacent(num) => self.out.execute(Print(format!(
+                        CellType::Empty => format!("{EMPTY}{SPACE_WIDTH}"),
+                        CellType::Adjacent(num) => format!(
                             "{}{}",
                             num.to_string().bold(),
                             SPACE_WIDTH
-                        )))?,
-                        CellType::Mine => self.out.execute(Print(format!(
+                        ),
+                        CellType::Mine => format!(
                             "{}{}",
                             MINE.red().bold(),
                             SPACE_WIDTH
-                        )))?,
-                    };
-                }
+                        ),
+                    }
+                };
+
+                self.out.execute(Print(cell))?;
             }
 
             // move the correct number of lines :)
@@ -467,9 +487,9 @@ impl Game {
         }
     }
 
-    fn choose_level<W: Write>(out: &mut W) -> Result<u8> {
+    fn choose_level<W: Write>(out: &mut W) -> Result<Option<u8>> {
         let mut level = 1;
-        let mut out = out;
+        let mut draw = true;
 
         terminal::enable_raw_mode()?;
 
@@ -478,35 +498,26 @@ impl Game {
 
         // loop on every keypress
         loop {
-            // clear the screen
-            out.execute(Clear(ClearType::All))?.execute(MoveTo(0, 0))?;
+            if draw {
+                // clear the screen
+                out.execute(Clear(ClearType::All))?.execute(MoveTo(0, 0))?;
 
-            // draw the menu
-            for line in MENU.split("\n") {
-                // if the line as our number we draw it in bold to show our selection
-                if line.contains(&format!("{}. ", level)) {
-                    out.execute(Print(line.bold()))?;
-                } else {
-                    out.execute(Print(line))?;
+                // draw the menu
+                for line in MENU.split("\n") {
+                    // if the line as our number we draw it in bold to show our selection
+                    if line.contains(&format!("{}. ", level)) {
+                        out.execute(Print(line.bold()))?;
+                    } else {
+                        out.execute(Print(line))?;
+                    }
+
+                    out.execute(MoveToNextLine(1))?;
                 }
-
-                out.execute(MoveToNextLine(1))?;
             }
 
             // get our event
             // this blocks so the loop doesn't run constantly
             let event = event::read()?;
-
-            // quit if we press q
-            if event
-                == Event::Key(KeyEvent {
-                    code: KeyCode::Char('q'),
-                    modifiers: KeyModifiers::empty(),
-                })
-            {
-                Self::exit_message(&mut out)?;
-                std::process::exit(0);
-            }
 
             // get our next level from the key event
             level = match event {
@@ -516,11 +527,24 @@ impl Game {
                     KeyCode::Enter => break,
                     KeyCode::Char(char) => match char {
                         ' ' => break,
-                        _ => continue,
+                        '1' => 1,
+                        '2' => 2,
+                        '3' => 3,
+                        'q' => return Ok(None),
+                        _ => {
+                            draw = false;
+                            continue;
+                        }
                     },
-                    _ => continue,
+                    _ => {
+                        draw = false;
+                        continue;
+                    }
                 },
-                _ => continue,
+                _ => {
+                    draw = false;
+                    continue;
+                }
             };
 
             // if we try to set level as a level out of bounds set it back in bounds
@@ -529,12 +553,14 @@ impl Game {
             } else if level < 1 {
                 level = 1;
             }
+
+            draw = true;
         }
 
         Self::reset_terminal(out)?;
 
         // return our level :)
-        Ok(level)
+        Ok(Some(level))
     }
 
     // make sure the terminal is back to normal
