@@ -408,7 +408,7 @@ impl Game {
     fn draw_board(&mut self) -> Result<()> {
         // clear the screen and move to 0,0
         self.out
-            .execute(Clear(ClearType::All))?
+            // .execute(Clear(ClearType::All))?
             .execute(MoveTo(0, 0))?;
 
         // draw all of the cells
@@ -478,13 +478,15 @@ impl Game {
         terminal::enable_raw_mode()?;
 
         // hide the cursor
-        out.execute(Hide)?;
+        out.execute(Hide)?.execute(Clear(ClearType::All))?;
 
         // loop on every keypress
         loop {
             if draw {
                 // clear the screen
-                out.execute(Clear(ClearType::All))?.execute(MoveTo(0, 0))?;
+                out
+                    // .execute(Clear(ClearType::All))?
+                    .execute(MoveTo(0, 0))?;
 
                 // draw the menu
                 for line in MENU.split("\n") {
