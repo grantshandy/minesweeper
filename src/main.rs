@@ -1,12 +1,9 @@
-#[macro_use]
-extern crate clap;
-
 use std::io::{stdout, Stdout, Write};
 
 use crossterm::{
     cursor::{Hide, MoveTo, MoveToNextLine, Show},
     event::{self, Event, KeyCode},
-    style::{Print, Stylize},
+    style::{Print, Stylize, StyledContent, self, Color},
     terminal::{self, Clear, ClearType},
     ExecutableCommand, Result,
 };
@@ -29,63 +26,50 @@ Controls:
 
 const EMPTY: char = ' ';
 const MINE: char = '!';
-const COVERED: char = 'x';
+const COVERED: char = '·';
 const MARKED: char = '?';
 
 // characters (spaces) between cells (default "   ")
-const SPACE_WIDTH: &'static str = "   ";
+const SPACE_WIDTH: &'static str = " ";
 // number of newlines inbetween lines
-const SPACE_HEIGHT: usize = 1;
+const SPACE_HEIGHT: usize = 0;
 
 // uncover everything at the beginning
 // use this for debugging
 const SHOW_EVERYTHING: bool = false;
 
 fn main() {
-    let app = app_from_crate!()
-        .arg(arg!(-l --level <LEVEL> "Which level to play (1-3, defaults to 1 if other is specified)").required(false))
+    let app = clap::app_from_crate!()
+        .arg(clap::arg!(-l --level <LEVEL> "Which level to play (1-3, defaults to 1 if other is specified)").required(false))
         .get_matches();
 
-    let res = match game_loop(app.value_of("level"), stdout()) {
-        Ok(mut out) => match Game::exit_message(&mut out) {
-            Ok(_) => Ok(()),
-            Err(error) => Err(error),
-        },
-        Err(error) => Err(error),
-    };
-
-    match res {
-        Ok(_) => (),
+    let mut game = match Game::new(app.value_of("level")) {
+        Ok(game) => game,
         Err(error) => {
-            eprintln!("Error: {}", error);
+            Game::reset_terminal().unwrap();
+            eprintln!("Game initialization error: {error}");
             std::process::exit(1);
         }
-    }
-}
-
-fn game_loop(level: Option<&str>, out: Stdout) -> Result<Stdout> {
-    let mut game = match Game::new(level) {
-        Ok(game) => match game {
-            Some(game) => game,
-            None => return Ok(out),
-        },
-        Err(error) => return Err(error),
     };
 
     loop {
         match game.run() {
-            Ok(restart) => match restart {
+            Ok(res) => match res {
                 true => continue,
                 false => break,
-            },
-            Err(error) => return Err(error),
+            }
+            Err(error) => {
+                Game::reset_terminal().unwrap();
+                eprintln!("Game runtime error: {error}");
+                std::process::exit(1);
+            }
         }
     }
 
-    Ok(out)
+    Game::exit_message().unwrap();
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 enum CellType {
     Empty,
     Adjacent(usize),
@@ -105,13 +89,14 @@ enum Input {
     Restart,
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 struct Cell {
     covered: bool,
     cell_type: CellType,
     marked: bool,
 }
 
+#[derive(Debug)]
 pub struct Game {
     // we use a single Stdout for simplicity
     out: Stdout,
@@ -132,17 +117,14 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new(level: Option<&str>) -> Result<Option<Self>> {
+    pub fn new(level: Option<&str>) -> Result<Self> {
         let mut out = stdout();
         let data = Vec::new();
         let is_touched = false;
 
         let level = match level {
             Some(level) => level.parse::<u8>().unwrap_or(1),
-            None => match Self::choose_level(&mut out)? {
-                Some(level) => level,
-                None => return Ok(None),
-            },
+            None => Self::choose_level(&mut out)?,
         };
 
         let (width, height) = match level {
@@ -163,7 +145,7 @@ impl Game {
         let selection = ((width / 2), (height / 2));
         let show_everything = SHOW_EVERYTHING;
 
-        Ok(Some(Self {
+        Ok(Self {
             out,
             data,
             num_mines,
@@ -172,7 +154,7 @@ impl Game {
             selection,
             is_touched,
             show_everything,
-        }))
+        })
     }
 
     pub fn run(&mut self) -> Result<bool> {
@@ -221,7 +203,9 @@ impl Game {
                         }
                     }
                     // if the user quit then end the function sending "false" which means don't restart it. Go to the exit message.
-                    Input::Quit => return Ok(false),
+                    Input::Quit => {
+                        return Ok(false);
+                    },
                     // if the user selected the cell...
                     Input::Select => {
                         // if we haven't touched the board yet populate the board so the user doesn't click on a mine their first try
@@ -445,7 +429,7 @@ impl Game {
                         CellType::Empty => format!("{EMPTY}{SPACE_WIDTH}"),
                         CellType::Adjacent(num) => format!(
                             "{}{}",
-                            num.to_string().bold(),
+                            Self::create_stylized_num(num).bold(),
                             SPACE_WIDTH
                         ),
                         CellType::Mine => format!(
@@ -487,7 +471,7 @@ impl Game {
         }
     }
 
-    fn choose_level<W: Write>(out: &mut W) -> Result<Option<u8>> {
+    fn choose_level<W: Write>(out: &mut W) -> Result<u8> {
         let mut level = 1;
         let mut draw = true;
 
@@ -530,7 +514,10 @@ impl Game {
                         '1' => 1,
                         '2' => 2,
                         '3' => 3,
-                        'q' => return Ok(None),
+                        'q' => {
+                            Self::exit_message()?;
+                            std::process::exit(0);
+                        },
                         _ => {
                             draw = false;
                             continue;
@@ -557,29 +544,29 @@ impl Game {
             draw = true;
         }
 
-        Self::reset_terminal(out)?;
+        Self::reset_terminal()?;
 
         // return our level :)
-        Ok(Some(level))
+        Ok(level)
     }
 
     // make sure the terminal is back to normal
-    fn reset_terminal<W: Write>(out: &mut W) -> Result<()> {
+    fn reset_terminal() -> Result<()> {
         terminal::disable_raw_mode()?;
-        out.flush()?;
+        stdout()
+            .execute(Clear(ClearType::All))?
+            .execute(MoveTo(0, 0))?
+            .execute(Show)?
+            .flush()?;
 
         Ok(())
     }
 
     // print a nice goodbye message and clear the screen
-    fn exit_message<W: Write>(out: &mut W) -> Result<()> {
-        let mut out = out;
+    fn exit_message() -> Result<()> {
+        Self::reset_terminal()?;
 
-        Self::reset_terminal(&mut out)?;
-
-        out.execute(Clear(ClearType::All))?
-            .execute(MoveTo(0, 0))?
-            .execute(Show)?
+        stdout()
             .execute(Print("Thanks for playing!"))?
             .execute(MoveToNextLine(2))?;
         Ok(())
@@ -653,6 +640,20 @@ impl Game {
             Some(Input::Direction((change.0 as usize, change.1 as usize)))
         } else {
             Some(Input::Direction(self.selection))
+        }
+    }
+
+    fn create_stylized_num(num: usize) -> StyledContent<String> {
+        match num {
+            1 => style::style(num.to_string()).with(Color::Blue),
+            2 => style::style(num.to_string()).with(Color::Green),
+            3 => style::style(num.to_string()).with(Color::Yellow),
+            4 => style::style(num.to_string()).with(Color::DarkBlue),
+            5 => style::style(num.to_string()).with(Color::DarkGreen),
+            6 => style::style(num.to_string()).with(Color::DarkMagenta),
+            7 => style::style(num.to_string()).with(Color::Red),
+            8 => style::style(num.to_string()).with(Color::DarkRed),
+            _ => style::style(num.to_string()),
         }
     }
 }
