@@ -1,26 +1,8 @@
 # minesweeper
 
-A [rust](https://rust-lang.org) implementation of [minesweeper](https://en.wikipedia.org/wiki/Minesweeper_(video_game)) that runs entirely in your terminal.
+An implementation of [minesweeper](https://en.wikipedia.org/wiki/Minesweeper_(video_game)) in [Rust](https://rust-lang.org) that runs entirely in your terminal.
 
-```
-    1   !   !   1                   
-
-1   2   3   3   2   1       1   1   
-
-1   !   2   2   !   1       1   !   
-
-1   2   !   2   1   1       1   1   
-
-    1   1   1                       
-
-1   1                   1   1   1   
-
-!   1                   1   !   1   
-
-2   3   1   1           1   1   1   
-
-!   2   !   1                       
-```
+![image](https://user-images.githubusercontent.com/45475651/201245542-21f87e29-c43c-4902-9ded-f62f1b99cf21.png)
 
 ## Controls
 - q - quit
